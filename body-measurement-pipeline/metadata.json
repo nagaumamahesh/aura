@@ -1,0 +1,6 @@
+{
+  "name": "Body Measurement Pipeline",
+  "description": "Monocular depth and pose estimator with scale-calibration ratios for e-commerce fitment.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

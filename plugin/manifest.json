@@ -1,0 +1,18 @@
+{
+    "version": "1.0.0",
+    "manifest_version": 3,
+    "name": "React Chrome Extension",
+    "permissions": [
+        "activeTab",
+        "scripting",
+        "storage"
+    ],
+    "host_permissions": [
+        "https://yce-api-01.makeupar.com/*",
+        "https://yce-us.s3-accelerate.amazonaws.com/*"
+    ],
+    "action": {
+        "default_popup": "js/index.html",
+        "default_title": "React Chrome Extension"
+    }
+}
