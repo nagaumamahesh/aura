@@ -5,6 +5,17 @@ const API_BASE_URL = "https://yce-api-01.makeupar.com";
 const API_KEY_STORAGE_KEY = "perfectCorpApiKey";
 const HISTORY_STORAGE_KEY = "perfectCorpTryOnHistory";
 const WARDROBE_STORAGE_KEY = "perfectCorpUserWardrobe";
+const MEASUREMENTS_STORAGE_KEY = "auraBodyMeasurements";
+
+export interface BodyMeasurements {
+  height: number;
+  shoulderWidth: number;
+  armLength: number;
+  torsoLength: number;
+  inseam: number;
+  hipWidth: number;
+  chestEstimate: number;
+}
 
 export interface WardrobeItem {
   id: string;
@@ -377,14 +388,18 @@ type ChromeApi = {
       queryInfo: { active: boolean; currentWindow?: boolean },
       callback: (tabs: Array<{ id?: number; windowId?: number; url?: string }>) => void
     ) => void;
+    create?: (
+      createProperties: { url: string },
+      callback?: (tab: { id?: number }) => void
+    ) => void;
   };
   scripting?: {
     executeScript: (
       injection: {
         target: { tabId: number };
-        func: () => PageImage[];
+        func: (...args: any[]) => any;
       },
-      callback: (results: Array<{ result?: PageImage[] }>) => void
+      callback: (results: Array<{ result?: any }>) => void
     ) => void;
   };
   storage?: {
@@ -1391,11 +1406,35 @@ function App() {
   const [hairColor, setHairColor] = useState("#E2E8F0");
 
   // Tab & Panels states
-  const [activeTab, setActiveTab] = useState<"fitting" | "closet" | "history">("fitting");
+  const [activeTab, setActiveTab] = useState<"fitting" | "sizing" | "closet" | "history">("fitting");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [wardrobe, setWardrobe] = useState<WardrobeItem[]>([]);
   const [pairedItem, setPairedItem] = useState<WardrobeItem | null>(null);
+
+  // Synchronized body measurements from localhost:3000
+  const [bodyMeasurements, setBodyMeasurements] = useState<BodyMeasurements | null>(null);
+  const [syncStatus, setSyncStatus] = useState<"idle" | "synced" | "failed" | "not_found">("idle");
+  const [syncMessage, setSyncMessage] = useState("");
+
+  // Fallback/Editable body measurements
+  const [manualHeight, setManualHeight] = useState("175");
+  const [manualShoulder, setManualShoulder] = useState("42");
+  const [manualArm, setManualArm] = useState("60");
+  const [manualTorso, setManualTorso] = useState("65");
+  const [manualChest, setManualChest] = useState("95");
+  const [manualHip, setManualHip] = useState("96");
+  const [manualInseam, setManualInseam] = useState("78");
+
+  // Garment size manual inputs
+  const [garmentType, setGarmentType] = useState<"top" | "bottom" | "full">("top");
+  const [dressShoulder, setDressShoulder] = useState("44");
+  const [dressChest, setDressChest] = useState("102");
+  const [dressLength, setDressLength] = useState("72");
+  const [dressSleeve, setDressSleeve] = useState("62");
+  const [dressWaist, setDressWaist] = useState("82");
+  const [dressHip, setDressHip] = useState("98");
+  const [dressInseam, setDressInseam] = useState("80");
 
   const canRunTryOn = useMemo(
     () => Boolean(apiKey.trim() && selectedImage && humanImage && tryOnStatus !== "uploading" && tryOnStatus !== "creating" && tryOnStatus !== "polling"),
@@ -1546,6 +1585,524 @@ function App() {
       setGarmentColor({ r, g, b, hex, hsl, name });
     };
     img.src = imageSrc;
+  };
+
+  const calculateSizingFit = (
+    body: BodyMeasurements | null,
+    type: "top" | "bottom" | "full",
+    gShoulder: number,
+    gChest: number,
+    gLength: number,
+    gSleeve: number,
+    gWaist: number,
+    gHip: number,
+    gInseam: number
+  ) => {
+    if (!body) {
+      return {
+        overallScore: 0,
+        verdict: "Tight/Strain Alert",
+        description: "No body profile synced. Please sync with AURA Depth Engine or enter measurements manually.",
+        segments: [] as any[]
+      };
+    }
+
+    const segments = [];
+    let scoreSum = 0;
+    let scoreCount = 0;
+
+    if (type === "top" || type === "full") {
+      // 1. Shoulder Width
+      const bShoulder = body.shoulderWidth;
+      const easeS = gShoulder - bShoulder;
+      let sStatus = "perfect";
+      let sText = "Perfect Match";
+      let sScore = 100;
+      let sFact = "Shoulder seams fall perfectly at the acromion bone, creating a crisp, premium drape.";
+
+      if (easeS < -3) {
+        sStatus = "very-tight";
+        sText = "Severe Tension";
+        sScore = 40;
+        sFact = "Extreme lateral pull across upper back. Fabric puckering likely; limits arm extension.";
+      } else if (easeS < 0) {
+        sStatus = "tight";
+        sText = "Snug / Narrow";
+        sScore = 75;
+        sFact = "Fitted look across shoulders. Ideal for high-stretch activewear, but snug for structured wovens.";
+      } else if (easeS > 8) {
+        sStatus = "excessive";
+        sText = "Extremely Drop-Shoulder";
+        sScore = 60;
+        sFact = "Oversized silhouette. The seams will fall low on your upper arm. Good for streetwear, poor for formal.";
+      } else if (easeS > 3.5) {
+        sStatus = "loose";
+        sText = "Relaxed Drop-Shoulder";
+        sScore = 90;
+        sFact = "Fashionable modern drop-shoulder drape, comfortable for layering.";
+      }
+
+      segments.push({
+        name: "Shoulder Alignment",
+        bodyValue: bShoulder,
+        garmentValue: gShoulder,
+        ease: easeS,
+        status: sStatus,
+        statusText: sText,
+        fact: sFact
+      });
+      scoreSum += sScore;
+      scoreCount++;
+
+      // 2. Chest circumference
+      const bChest = body.chestEstimate;
+      const easeC = gChest - bChest;
+      let cStatus = "perfect";
+      let cText = "Ideal Breathing Room";
+      let cScore = 100;
+      let cFact = "Perfect ease of 5-10cm. Fabric falls naturally around torso without contour tension.";
+
+      if (easeC < 0) {
+        cStatus = "very-tight";
+        cText = "Button Strain Alert";
+        cScore = 30;
+        cFact = "Garment is smaller than body chest. Buttons will gap and seam tension will be extreme.";
+      } else if (easeC < 4) {
+        cStatus = "snug";
+        cText = "Sleek Slim Fit";
+        cScore = 85;
+        cFact = "Close-fitting. Restricts heavier under-layers, but creates an elegant, sharp body contour.";
+      } else if (easeC > 20) {
+        cStatus = "excessive";
+        cText = "Oversized Baggy";
+        cScore = 55;
+        cFact = "Excess fabric will billow. Recommend sizing down unless targeting hyper-relaxed street-style drape.";
+      } else if (easeC > 10) {
+        cStatus = "loose";
+        cText = "Casual Relaxed Fit";
+        cScore = 92;
+        cFact = "Generous drape with complete breathing room. Excellent ventilation and easy to layer.";
+      }
+
+      segments.push({
+        name: "Torso Chest Fit",
+        bodyValue: bChest,
+        garmentValue: gChest,
+        ease: easeC,
+        status: cStatus,
+        statusText: cText,
+        fact: cFact
+      });
+      scoreSum += cScore;
+      scoreCount++;
+
+      // 3. Torso Length
+      const bTorso = body.torsoLength;
+      const easeL = gLength - bTorso;
+      let lStatus = "perfect";
+      let lText = "Ideal Drop Length";
+      let lScore = 100;
+      let lFact = "Length terminates beautifully below your beltline, creating balanced vertical proportions.";
+
+      if (easeL < -5) {
+        lStatus = "very-tight";
+        lText = "Extremely Cropped";
+        lScore = 65;
+        lFact = "Will expose midriff during movement. Highly cropped aesthetic.";
+      } else if (easeL < 0) {
+        lStatus = "snug";
+        lText = "High-Waist Tailored";
+        lScore = 88;
+        lFact = "Terminates exactly at the beltline. Perfect for high-waisted styling or untucked wear.";
+      } else if (easeL > 20) {
+        lStatus = "excessive";
+        lText = "Tunic Elongation";
+        lScore = 70;
+        lFact = "Elongated drape ending near upper thighs. Classic streetwear tunic length.";
+      } else if (easeL > 10) {
+        lStatus = "loose";
+        lText = "Relaxed Length";
+        lScore = 94;
+        lFact = "Ends below hips. Perfect for outer layers like hoodies and heavy jackets.";
+      }
+
+      segments.push({
+        name: "Vertical Length",
+        bodyValue: bTorso,
+        garmentValue: gLength,
+        ease: easeL,
+        status: lStatus,
+        statusText: lText,
+        fact: lFact
+      });
+      scoreSum += lScore;
+      scoreCount++;
+
+      // 4. Sleeve Length
+      const bArm = body.armLength;
+      const easeSl = gSleeve - bArm;
+      let slStatus = "perfect";
+      let slText = "Perfect Cuff Landing";
+      let slScore = 100;
+      let slFact = "Cuffs rest precisely at the wrist bone, keeping sleeves in active alignment.";
+
+      if (easeSl < -4) {
+        slStatus = "very-tight";
+        slText = "Short Sleeves";
+        slScore = 50;
+        slFact = "Sleeve ends high on forearm. Fabric pulling will occur on arm extension.";
+      } else if (easeSl < 0) {
+        slStatus = "snug";
+        slText = "Snug / High-Cuff";
+        slScore = 88;
+        slFact = "Slightly shorter fit, ideal for activewear or displaying wrist accessories.";
+      } else if (easeSl > 8) {
+        slStatus = "excessive";
+        slText = "Elongated Stacked";
+        slScore = 70;
+        slFact = "Sleeves fall over hands. Fabric will bunch and stack heavily at the cuffs.";
+      } else if (easeSl > 3) {
+        slStatus = "loose";
+        slText = "Relaxed Stack";
+        slScore = 95;
+        slFact = "Slightly long, resting elegantly on root of hand. Safe against shrinkage.";
+      }
+
+      segments.push({
+        name: "Sleeve Alignment",
+        bodyValue: bArm,
+        garmentValue: gSleeve,
+        ease: easeSl,
+        status: slStatus,
+        statusText: slText,
+        fact: slFact
+      });
+      scoreSum += slScore;
+      scoreCount++;
+    }
+
+    if (type === "bottom") {
+      // 1. Waist circumference (estimated body waist is hipWidth * 2.7)
+      const bWaist = Math.round(body.hipWidth * 2.7);
+      const easeW = gWaist - bWaist;
+      let wStatus = "perfect";
+      let wText = "Flawless Waistline";
+      let wScore = 100;
+      let wFact = "Garment waist matches body contour perfectly. No belt needed to hold structured rise.";
+
+      if (easeW < -3) {
+        wStatus = "very-tight";
+        wText = "Waist Compression";
+        wScore = 35;
+        wFact = "Extremely tight. Will cause pinching, discomfort, and cannot be buttoned comfortably.";
+      } else if (easeW < 0) {
+        wStatus = "tight";
+        wText = "Snug Silhouette";
+        wScore = 80;
+        wFact = "Snug contour. Ideal for structural compression, but may feel rigid after meals.";
+      } else if (easeW > 8) {
+        wStatus = "excessive";
+        wText = "Gaping Waistband";
+        wScore = 60;
+        wFact = "Waistband sits loose with substantial gaping. Belt or alteration required.";
+      } else if (easeW > 2.5) {
+        wStatus = "loose";
+        wText = "Relaxed Comfort Rise";
+        wScore = 92;
+        wFact = "Relaxed waistband. Allows tucking heavy knits easily and breathes beautifully.";
+      }
+
+      segments.push({
+        name: "Waistline Fit",
+        bodyValue: bWaist,
+        garmentValue: gWaist,
+        ease: easeW,
+        status: wStatus,
+        statusText: wText,
+        fact: wFact
+      });
+      scoreSum += wScore;
+      scoreCount++;
+
+      // 2. Hip circumference (estimated body hip is hipWidth * 3.14)
+      const bHip = Math.round(body.hipWidth * 3.14);
+      const easeH = gHip - bHip;
+      let hStatus = "perfect";
+      let hText = "Balanced Seat Room";
+      let hScore = 100;
+      let hFact = "Excellent seat and thigh ease. Allows squatting and climbing stairs without drag.";
+
+      if (easeH < -2) {
+        hStatus = "very-tight";
+        hText = "Thigh Seam Pull";
+        hScore = 40;
+        hFact = "Severe seat tension. Seam stress is dangerous; high risk of fabric blowout on squatting.";
+      } else if (easeH < 2) {
+        hStatus = "tight";
+        hText = "Form-Fitting Seat";
+        hScore = 84;
+        hFact = "Tight contour. Highlights athletic silhouette but limits raw lateral flexibility.";
+      } else if (easeH > 15) {
+        hStatus = "excessive";
+        hText = "Puffy Balloon Seat";
+        hScore = 65;
+        hFact = "Excess ballooning around hips and saddlebag areas. Very loose silhouette.";
+      } else if (easeH > 8) {
+        hStatus = "loose";
+        hText = "Modern Wide Fit";
+        hScore = 94;
+        hFact = "Fashionable relaxed rise, giving an elegant flow and draping comfort.";
+      }
+
+      segments.push({
+        name: "Seat & Hip Volume",
+        bodyValue: bHip,
+        garmentValue: gHip,
+        ease: easeH,
+        status: hStatus,
+        statusText: hText,
+        fact: hFact
+      });
+      scoreSum += hScore;
+      scoreCount++;
+
+      // 3. Inseam Length
+      const bInseam = body.inseam;
+      const easeI = gInseam - bInseam;
+      let iStatus = "perfect";
+      let iText = "Tailored Hem Break";
+      let iScore = 100;
+      let iFact = "Slight break. Pants end perfectly at shoe collar with a sleek, clean line.";
+
+      if (easeI < -5) {
+        iStatus = "very-tight";
+        iText = "Ankle-Crop / Flooding";
+        iScore = 70;
+        iFact = "Exposes 5cm+ of ankles. Cropped look, ideal for summers but cold in winter.";
+      } else if (easeI < 0) {
+        iStatus = "snug";
+        iText = "No-Break Tailored";
+        iScore = 90;
+        iFact = "Zero break. Hem skims the top of the tongue, giving a crisp modern appearance.";
+      } else if (easeI > 8) {
+        iStatus = "excessive";
+        iText = "Floor-Dragging Bunch";
+        iScore = 60;
+        iFact = "Hem drags on floor. High risk of treading, wetting, and fabric shredding at heels.";
+      } else if (easeI > 3) {
+        iStatus = "loose";
+        iText = "Full Stack Break";
+        iScore = 95;
+        iFact = "Full stack break. Bunching casually around shoelaces for a vintage/baggy drape.";
+      }
+
+      segments.push({
+        name: "Inseam Drop",
+        bodyValue: bInseam,
+        garmentValue: gInseam,
+        ease: easeI,
+        status: iStatus,
+        statusText: iText,
+        fact: iFact
+      });
+      scoreSum += iScore;
+      scoreCount++;
+    }
+
+    // Calculate Overall
+    const overallScore = scoreCount > 0 ? Math.round(scoreSum / scoreCount) : 100;
+    
+    let verdict: "Flawless Fit" | "Good Alternative" | "Tight/Strain Alert" | "Baggy / Oversized" = "Flawless Fit";
+    let description = "This size matches your skeletal structure with high ergonomic compliance. Recommended!";
+
+    if (overallScore < 60) {
+      verdict = "Tight/Strain Alert";
+      description = "Critical tension warnings across key mobility zones. Fabric stress is highly probable.";
+    } else if (overallScore < 80) {
+      verdict = "Good Alternative";
+      description = "A comfortable fit that contour-accentuates, though tight/loose in some secondary zones.";
+    } else if (segments.some(s => s.status === "excessive")) {
+      verdict = "Baggy / Oversized";
+      description = "Generous volume and length that is highly comfortable but visually loose.";
+    }
+
+    return {
+      overallScore,
+      verdict,
+      description,
+      segments
+    };
+  };
+
+  const loadBodyMeasurements = () => {
+    const chromeApi = getChromeApi();
+    const storageLocal = chromeApi?.storage?.local;
+    if (storageLocal) {
+      storageLocal.get([MEASUREMENTS_STORAGE_KEY], (items) => {
+        const raw = items[MEASUREMENTS_STORAGE_KEY];
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw) as BodyMeasurements;
+            setBodyMeasurements(parsed);
+            setSyncStatus("synced");
+            setSyncMessage("Loaded synced body profile.");
+            setManualHeight(parsed.height.toString());
+            setManualShoulder(parsed.shoulderWidth.toString());
+            setManualArm(parsed.armLength.toString());
+            setManualTorso(parsed.torsoLength.toString());
+            setManualChest(parsed.chestEstimate.toString());
+            setManualHip(parsed.hipWidth.toString());
+            setManualInseam(parsed.inseam.toString());
+          } catch (e) {
+            setBodyMeasurements(null);
+            setSyncStatus("idle");
+          }
+        }
+      });
+    } else {
+      const raw = localStorage.getItem(MEASUREMENTS_STORAGE_KEY);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as BodyMeasurements;
+          setBodyMeasurements(parsed);
+          setSyncStatus("synced");
+          setSyncMessage("Loaded saved body profile.");
+          setManualHeight(parsed.height.toString());
+          setManualShoulder(parsed.shoulderWidth.toString());
+          setManualArm(parsed.armLength.toString());
+          setManualTorso(parsed.torsoLength.toString());
+          setManualChest(parsed.chestEstimate.toString());
+          setManualHip(parsed.hipWidth.toString());
+          setManualInseam(parsed.inseam.toString());
+        } catch (e) {
+          setBodyMeasurements(null);
+          setSyncStatus("idle");
+        }
+      }
+    }
+  };
+
+  const syncBodyMeasurements = () => {
+    const chromeApi = getChromeApi();
+    if (!chromeApi?.tabs?.query || !chromeApi?.scripting?.executeScript) {
+      // STANDALONE MANUAL SIMULATED SYNC OR FALLBACK
+      try {
+        const raw = localStorage.getItem("aura_body_measurements");
+        if (raw) {
+          const parsed = JSON.parse(raw) as BodyMeasurements;
+          setBodyMeasurements(parsed);
+          setSyncStatus("synced");
+          setSyncMessage("Skeletal profile synced from local tab cache!");
+          localStorage.setItem(MEASUREMENTS_STORAGE_KEY, JSON.stringify(parsed));
+          
+          setManualHeight(parsed.height.toFixed(1));
+          setManualShoulder(parsed.shoulderWidth.toFixed(1));
+          setManualArm(parsed.armLength.toFixed(1));
+          setManualTorso(parsed.torsoLength.toFixed(1));
+          setManualChest(parsed.chestEstimate.toFixed(1));
+          setManualHip(parsed.hipWidth.toFixed(1));
+          setManualInseam(parsed.inseam.toFixed(1));
+        } else {
+          setSyncStatus("not_found");
+          setSyncMessage("No measurements found on localhost page. Open AURA Depth Engine first.");
+        }
+      } catch (e) {
+        setSyncStatus("failed");
+        setSyncMessage("Standalone sync failed.");
+      }
+      return;
+    }
+
+    setSyncStatus("idle");
+    setSyncMessage("Searching for active AURA page...");
+
+    chromeApi.tabs.query({ active: true }, (tabs) => {
+      // Find a tab that contains localhost:3000
+      const activeTab = tabs[0];
+      const targetTab = tabs.find(t => t.url && t.url.includes("localhost:3000")) || activeTab;
+
+      if (!targetTab || !targetTab.id || !targetTab.url || !targetTab.url.includes("localhost:3000")) {
+        setSyncStatus("failed");
+        setSyncMessage("Please open and select the AURA tab (http://localhost:3000) to sync measurements.");
+        return;
+      }
+
+      setSyncMessage("Syncing skeletal profile from tab...");
+
+      chromeApi.scripting?.executeScript(
+        {
+          target: { tabId: targetTab.id },
+          func: () => {
+            return localStorage.getItem("aura_body_measurements");
+          }
+        },
+        (results) => {
+          const error = chromeApi.runtime?.lastError?.message;
+          if (error) {
+            setSyncStatus("failed");
+            setSyncMessage("Sync failed: script execution blocked or tab closed.");
+            return;
+          }
+
+          const rawData = results?.[0]?.result;
+          if (rawData) {
+            try {
+              const parsed = JSON.parse(rawData) as BodyMeasurements;
+              setBodyMeasurements(parsed);
+              setSyncStatus("synced");
+              setSyncMessage("Skeletal profile synchronized successfully!");
+
+              // Save to extension storage
+              const storageLocal = chromeApi.storage?.local;
+              if (storageLocal) {
+                storageLocal.set({ [MEASUREMENTS_STORAGE_KEY]: JSON.stringify(parsed) });
+              } else {
+                localStorage.setItem(MEASUREMENTS_STORAGE_KEY, JSON.stringify(parsed));
+              }
+
+              // Update input state fields
+              setManualHeight(parsed.height.toFixed(1));
+              setManualShoulder(parsed.shoulderWidth.toFixed(1));
+              setManualArm(parsed.armLength.toFixed(1));
+              setManualTorso(parsed.torsoLength.toFixed(1));
+              setManualChest(parsed.chestEstimate.toFixed(1));
+              setManualHip(parsed.hipWidth.toFixed(1));
+              setManualInseam(parsed.inseam.toFixed(1));
+            } catch (err) {
+              setSyncStatus("failed");
+              setSyncMessage("Sync failed: received invalid data format.");
+            }
+          } else {
+            setSyncStatus("not_found");
+            setSyncMessage("No body telemetry found on page. Run Fit Depth scan first!");
+          }
+        }
+      );
+    });
+  };
+
+  const saveManualMeasurements = () => {
+    const parsed: BodyMeasurements = {
+      height: parseFloat(manualHeight) || 175,
+      shoulderWidth: parseFloat(manualShoulder) || 42,
+      armLength: parseFloat(manualArm) || 60,
+      torsoLength: parseFloat(manualTorso) || 65,
+      chestEstimate: parseFloat(manualChest) || 95,
+      hipWidth: parseFloat(manualHip) || 96,
+      inseam: parseFloat(manualInseam) || 78,
+    };
+
+    setBodyMeasurements(parsed);
+    setSyncStatus("synced");
+    setSyncMessage("Body profile saved manually.");
+
+    const chromeApi = getChromeApi();
+    const storageLocal = chromeApi?.storage?.local;
+    if (storageLocal) {
+      storageLocal.set({ [MEASUREMENTS_STORAGE_KEY]: JSON.stringify(parsed) });
+    } else {
+      localStorage.setItem(MEASUREMENTS_STORAGE_KEY, JSON.stringify(parsed));
+    }
   };
 
   const loadSavedApiKey = () => {
@@ -1966,7 +2523,26 @@ function App() {
     loadImages();
     loadHistory();
     loadWardrobe();
+    loadBodyMeasurements();
   }, []);
+
+  // Auto-sync attempt if we switch to sizing tab and are on localhost:3000
+  useEffect(() => {
+    if (activeTab === "sizing" && syncStatus !== "synced") {
+      const chromeApi = getChromeApi();
+      if (chromeApi?.tabs?.query) {
+        chromeApi.tabs.query({ active: true }, (tabs) => {
+          const activeTab = tabs[0];
+          if (activeTab?.url && activeTab.url.includes("localhost:3000")) {
+            syncBodyMeasurements();
+          }
+        });
+      } else {
+        // standalone mode fallback: try syncing automatically from window cache if available
+        syncBodyMeasurements();
+      }
+    }
+  }, [activeTab]);
 
   useEffect(() => {
     if (isPopout) {
@@ -2057,6 +2633,12 @@ function App() {
           onClick={() => setActiveTab("fitting")}
         >
           Fitting Room
+        </button>
+        <button 
+          className={`tab-btn ${activeTab === "sizing" ? "active" : ""}`} 
+          onClick={() => setActiveTab("sizing")}
+        >
+          Sizing & Fit
         </button>
         <button 
           className={`tab-btn ${activeTab === "closet" ? "active" : ""}`} 
@@ -2287,6 +2869,283 @@ function App() {
               </div>
             )}
           </section>
+        </div>
+      ) : activeTab === "sizing" ? (
+        <div className="sizing-tab">
+          {/* Header Description */}
+          <section className="panel" aria-labelledby="sizing-advisor-heading">
+            <div className="section-heading">
+              <div>
+                <h2 id="sizing-advisor-heading">✨ Skeletal Sizing & Fit Advisor</h2>
+                <p>Sync your 3D joint telemetry with localhost:3000, input retail garment specs, and analyze fitting ergonomics.</p>
+              </div>
+            </div>
+
+            {/* Sync Warning / Call-to-action */}
+            {syncStatus !== "synced" ? (
+              <div className="sync-banner warning">
+                <span className="icon">⚠️</span>
+                <div className="banner-content">
+                  <strong>Body Profile Not Synced</strong>
+                  <p>
+                    To calculate your skeletal body measurements,{" "}
+                    <a 
+                      href="http://localhost:3000" 
+                      target="_blank" 
+                      rel="noreferrer" 
+                      className="click-here-link"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        const chromeApi = getChromeApi();
+                        if (chromeApi?.tabs?.create) {
+                          chromeApi.tabs?.create({ url: "http://localhost:3000" });
+                        } else {
+                          window.open("http://localhost:3000", "_blank");
+                        }
+                      }}
+                    >
+                      click here
+                    </a>{" "}
+                    to run the AURA Depth Engine on localhost:3000.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="sync-banner success">
+                <span className="icon">✅</span>
+                <div className="banner-content">
+                  <strong>Telemetry Connected</strong>
+                  <p>Skeletal body profile is synced with AURA Depth Engine.</p>
+                </div>
+              </div>
+            )}
+
+            {/* Sync trigger button */}
+            <div className="sync-actions-row">
+              <button 
+                type="button" 
+                className="sync-btn"
+                onClick={syncBodyMeasurements}
+              >
+                🔄 Sync with Active AURA Page
+              </button>
+              {syncMessage && <p className="sync-message-log">{syncMessage}</p>}
+            </div>
+          </section>
+
+          {/* Grid for Body Profile vs Garment Specs */}
+          <div className="sizing-grid">
+            {/* COLUMN 1: Body Profile (Sync Display / Manual Fallback) */}
+            <section className="panel body-profile-panel">
+              <h3>👤 Body Measurements (Skeletal Profile)</h3>
+              <p className="panel-desc">Calculated via MediaPipe pose tracking, or entered manually as fallback.</p>
+              
+              <div className="manual-inputs-grid">
+                <div className="input-field">
+                  <label htmlFor="body-height">Height (cm)</label>
+                  <input id="body-height" type="number" value={manualHeight} onChange={(e) => setManualHeight(e.target.value)} />
+                </div>
+                <div className="input-field">
+                  <label htmlFor="body-shoulder">Shoulder Width (cm)</label>
+                  <input id="body-shoulder" type="number" value={manualShoulder} onChange={(e) => setManualShoulder(e.target.value)} />
+                </div>
+                <div className="input-field">
+                  <label htmlFor="body-arm">Arm Length (cm)</label>
+                  <input id="body-arm" type="number" value={manualArm} onChange={(e) => setManualArm(e.target.value)} />
+                </div>
+                <div className="input-field">
+                  <label htmlFor="body-torso">Torso Length (cm)</label>
+                  <input id="body-torso" type="number" value={manualTorso} onChange={(e) => setManualTorso(e.target.value)} />
+                </div>
+                <div className="input-field">
+                  <label htmlFor="body-chest">Chest (cm)</label>
+                  <input id="body-chest" type="number" value={manualChest} onChange={(e) => setManualChest(e.target.value)} />
+                </div>
+                <div className="input-field">
+                  <label htmlFor="body-hip">Hip Width (cm)</label>
+                  <input id="body-hip" type="number" value={manualHip} onChange={(e) => setManualHip(e.target.value)} />
+                </div>
+                <div className="input-field">
+                  <label htmlFor="body-inseam">Inseam (cm)</label>
+                  <input id="body-inseam" type="number" value={manualInseam} onChange={(e) => setManualInseam(e.target.value)} />
+                </div>
+              </div>
+
+              <button 
+                type="button" 
+                className="save-profile-btn"
+                onClick={saveManualMeasurements}
+              >
+                💾 Update Body Profile
+              </button>
+            </section>
+
+            {/* COLUMN 2: Garment Sizings Manual Input */}
+            <section className="panel garment-specs-panel">
+              <h3>📐 Garment Sizing Specs</h3>
+              <p className="panel-desc">Insert the dress measurements manually from the retailer's size chart.</p>
+              
+              <div className="garment-type-selector">
+                <button 
+                  type="button" 
+                  className={`type-btn ${garmentType === "top" ? "active" : ""}`}
+                  onClick={() => setGarmentType("top")}
+                >
+                  👚 Tops / Outerwear
+                </button>
+                <button 
+                  type="button" 
+                  className={`type-btn ${garmentType === "bottom" ? "active" : ""}`}
+                  onClick={() => setGarmentType("bottom")}
+                >
+                  👖 Bottoms / Pants
+                </button>
+                <button 
+                  type="button" 
+                  className={`type-btn ${garmentType === "full" ? "active" : ""}`}
+                  onClick={() => setGarmentType("full")}
+                >
+                  👗 Full Dress
+                </button>
+              </div>
+
+              <div className="garment-inputs-grid">
+                {(garmentType === "top" || garmentType === "full") && (
+                  <>
+                    <div className="input-field">
+                      <label htmlFor="garment-shoulder">Garment Shoulder (cm)</label>
+                      <input id="garment-shoulder" type="number" value={dressShoulder} onChange={(e) => setDressShoulder(e.target.value)} />
+                    </div>
+                    <div className="input-field">
+                      <label htmlFor="garment-chest">Garment Chest (cm)</label>
+                      <input id="garment-chest" type="number" value={dressChest} onChange={(e) => setDressChest(e.target.value)} />
+                    </div>
+                    <div className="input-field">
+                      <label htmlFor="garment-length">Garment Length (cm)</label>
+                      <input id="garment-length" type="number" value={dressLength} onChange={(e) => setDressLength(e.target.value)} />
+                    </div>
+                    <div className="input-field">
+                      <label htmlFor="garment-sleeve">Garment Sleeve (cm)</label>
+                      <input id="garment-sleeve" type="number" value={dressSleeve} onChange={(e) => setDressSleeve(e.target.value)} />
+                    </div>
+                  </>
+                )}
+
+                {garmentType === "bottom" && (
+                  <>
+                    <div className="input-field">
+                      <label htmlFor="garment-waist">Garment Waist (cm)</label>
+                      <input id="garment-waist" type="number" value={dressWaist} onChange={(e) => setDressWaist(e.target.value)} />
+                    </div>
+                    <div className="input-field">
+                      <label htmlFor="garment-hip">Garment Hip (cm)</label>
+                      <input id="garment-hip" type="number" value={dressHip} onChange={(e) => setDressHip(e.target.value)} />
+                    </div>
+                    <div className="input-field">
+                      <label htmlFor="garment-inseam">Garment Inseam (cm)</label>
+                      <input id="garment-inseam" type="number" value={dressInseam} onChange={(e) => setDressInseam(e.target.value)} />
+                    </div>
+                    <div className="input-field">
+                      <label htmlFor="garment-outseam">Garment Outseam/Length (cm)</label>
+                      <input id="garment-outseam" type="number" value={dressLength} onChange={(e) => setDressLength(e.target.value)} />
+                    </div>
+                  </>
+                )}
+
+                {garmentType === "full" && (
+                  <>
+                    <div className="input-field">
+                      <label htmlFor="garment-full-waist">Garment Waist (cm)</label>
+                      <input id="garment-full-waist" type="number" value={dressWaist} onChange={(e) => setDressWaist(e.target.value)} />
+                    </div>
+                    <div className="input-field">
+                      <label htmlFor="garment-full-hip">Garment Hip (cm)</label>
+                      <input id="garment-full-hip" type="number" value={dressHip} onChange={(e) => setDressHip(e.target.value)} />
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
+          </div>
+
+          {/* SECTION: Interactive Fit Confidence & Telemetry Card */}
+          {bodyMeasurements && (
+            <section className="panel fit-results-panel">
+              {(() => {
+                const report = calculateSizingFit(
+                  bodyMeasurements,
+                  garmentType,
+                  parseFloat(dressShoulder) || 0,
+                  parseFloat(dressChest) || 0,
+                  parseFloat(dressLength) || 0,
+                  parseFloat(dressSleeve) || 0,
+                  parseFloat(dressWaist) || 0,
+                  parseFloat(dressHip) || 0,
+                  parseFloat(dressInseam) || 0
+                );
+
+                const scoreClass = 
+                  report.overallScore >= 90 ? "high" : 
+                  report.overallScore >= 70 ? "mid" : "low";
+
+                return (
+                  <>
+                    <div className="fit-score-header">
+                      <div className="score-ring-container">
+                        <svg className="score-ring" viewBox="0 0 36 36">
+                          <path
+                            className="ring-bg"
+                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                          />
+                          <path
+                            className={`ring-fill ${scoreClass}`}
+                            strokeDasharray={`${report.overallScore}, 100`}
+                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                          />
+                        </svg>
+                        <div className="score-number-overlay">
+                          <span className="pct">{report.overallScore}%</span>
+                          <span className="lbl">Fit Confidence</span>
+                        </div>
+                      </div>
+
+                      <div className="verdict-summary">
+                        <span className={`verdict-badge ${scoreClass}`}>{report.verdict}</span>
+                        <h4>Ergonomic Fitting Assessment</h4>
+                        <p>{report.description}</p>
+                      </div>
+                    </div>
+
+                    <div className="segments-analysis">
+                      <h4>🛠️ Joint-by-Joint Sizing Analysis</h4>
+                      <div className="segment-cards-list">
+                        {report.segments.map((seg, idx) => (
+                          <div key={idx} className={`segment-card status-${seg.status}`}>
+                            <div className="segment-card-header">
+                              <h5>{seg.name}</h5>
+                              <span className={`status-pill ${seg.status}`}>{seg.statusText}</span>
+                            </div>
+                            
+                            <div className="segment-bar-row">
+                              <div className="segment-specs-txt">
+                                <span>Body: <strong>{seg.bodyValue.toFixed(1)} cm</strong></span>
+                                <span>Garment: <strong>{seg.garmentValue.toFixed(1)} cm</strong></span>
+                              </div>
+                              <div className="segment-ease-indicator">
+                                Ease: <strong>{seg.ease >= 0 ? "+" : ""}{seg.ease.toFixed(1)} cm</strong>
+                              </div>
+                            </div>
+
+                            <p className="segment-fact-txt">⚡ <strong>Fit Fact:</strong> {seg.fact}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </section>
+          )}
         </div>
       ) : activeTab === "closet" ? (
         <div className="closet-tab">

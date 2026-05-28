@@ -4,16 +4,23 @@ import SidebarControls, { REFERENCE_OBJECTS } from './components/SidebarControls
 import InteractiveCanvas from './components/InteractiveCanvas';
 import ResultsPanel from './components/ResultsPanel';
 import CameraCaptureOverlay from './components/CameraCaptureOverlay';
+import WardrobeEngine from './components/WardrobeEngine';
+import TryOnSandbox from './components/TryOnSandbox';
+import ChromeExtensionSimulator from './components/ChromeExtensionSimulator';
+
 import { DEMO_SAMPLES } from './data/demoSamples';
 import { usePoseLandmarker } from './hooks/usePoseLandmarker';
 import { computeMeasurements, calculateConfidence, evaluateSizing, getDistance2D } from './utils/measurementMath';
 import { Landmark, PipelinePath, BodyMeasurements, SegmentConfidence } from './types';
-import { ShieldCheck, Info, Camera, RefreshCw } from 'lucide-react';
+import { ShieldCheck, Info, Cpu, Shirt, Sparkles, Chrome, HelpCircle } from 'lucide-react';
 
 export default function App() {
   const { landmarker, isLoading: isMediaPipeLoading, error: mediaPipeError, detectPose } = usePoseLandmarker();
 
-  // Primary States
+  // Primary Navigation State
+  const [activeModule, setActiveModule] = useState<'fit-depth' | 'wardrobe-rag' | 'tryon-harmony' | 'extension-sim'>('fit-depth');
+
+  // Primary States (Fit Engine)
   const [path, setPath] = useState<PipelinePath>('A');
   const [userHeightCm, setUserHeightCm] = useState<number>(175);
   const [selectedRefObjId, setSelectedRefObjId] = useState<string>('a4');
@@ -27,10 +34,10 @@ export default function App() {
   const [showWebcam, setShowWebcam] = useState<boolean>(false);
   const [analysisNotice, setAnalysisNotice] = useState<{ type: 'success' | 'warn'; msg: string } | null>(null);
 
-  // Manual Overrides State (resets whenever a new preset or image is parsed)
+  // Manual Overrides State
   const [overrideMeasurements, setOverrideMeasurements] = useState<BodyMeasurements | null>(null);
 
-  // Path B Adjustable Reference Bounding Box (represented in percentage 0 - 100 of container)
+  // Path B Adjustable Reference Bounding Box
   const [refBox, setRefBox] = useState<{ x: number; y: number; width: number; height: number }>({
     x: 42,
     y: 40,
@@ -38,17 +45,13 @@ export default function App() {
     height: 20,
   });
 
-  // Load preset sample automatically on startup
   const activePreset = DEMO_SAMPLES.find((s) => s.id === activePresetId) || null;
-
-  // Track active landmarks feed (presets vs custom uploads)
   const activeLandmarks = activePresetId ? activePreset?.landmarks || null : customLandmarks;
 
   // Run MediaPipe Pose detector on uploaded image or webcam snapshot
   useEffect(() => {
     if (!imageSrc) return;
     if (activePresetId !== null) {
-      // Clear overrides & any notices when switching preset examples
       setOverrideMeasurements(null);
       setAnalysisNotice(null);
       return;
@@ -66,7 +69,6 @@ export default function App() {
 
       try {
         if (!landmarker) {
-          // If MediaPipe is still loading or failed, fallback to smart humanoid coordinates fitting their current path
           setTimeout(() => {
             if (!isSubscribed) return;
             const genericPreset = DEMO_SAMPLES[gender === 'male' ? 0 : 1].landmarks;
@@ -93,13 +95,12 @@ export default function App() {
           }));
 
           setCustomLandmarks(poses);
-          setOverrideMeasurements(null); // Fresh tracking
+          setOverrideMeasurements(null);
           setAnalysisNotice({
             type: 'success',
             msg: 'Pose analysis completed! MediaPipe located 33 distinct landmark nodes.',
           });
         } else {
-          // Fallback if no person detected in photo
           const genericPreset = DEMO_SAMPLES[gender === 'male' ? 0 : 1].landmarks;
           setCustomLandmarks(genericPreset);
           setAnalysisNotice({
@@ -139,7 +140,6 @@ export default function App() {
         x: (ankleL.x + ankleR.x) / 2,
         y: (ankleL.y + ankleR.y) / 2,
       };
-      // Distance nose 0 to ankles 27,28. Represents user height minus standard 11.5cm crown to nose proportion.
       const verticalPx = getDistance2D(nose, ankleMid, 1000, 1000);
       const denominator = Math.max(10, userHeightCm - 11.5);
       return verticalPx / denominator;
@@ -147,7 +147,6 @@ export default function App() {
 
     if (path === 'B') {
       const refObj = REFERENCE_OBJECTS.find((o) => o.id === selectedRefObjId) || REFERENCE_OBJECTS[0];
-      // Map longest percentage dimension to virtual coordinates
       const boxW = (refBox.width / 100) * 1000;
       const boxH = (refBox.height / 100) * 1000;
       const longestPx = Math.max(boxW, boxH);
@@ -155,7 +154,6 @@ export default function App() {
     }
 
     if (path === 'C') {
-      // Path C Backdrop door standards (200.0cm frame taking 84% vertical resolution)
       const virtualDoorPx = 1000 * 0.84;
       return virtualDoorPx / 200.0;
     }
@@ -170,15 +168,23 @@ export default function App() {
     ? activePreset.presetMeasurements
     : computeMeasurements(activeLandmarks || [], 1000, 1000, pxPerCm);
 
-  // Sync gender profile selection on presets switch
   useEffect(() => {
     if (activePreset) {
       setGender(activePreset.gender);
     }
   }, [activePresetId]);
 
-  // Handle active measurements (allow overriting manually)
   const measurements = overrideMeasurements || computedMeasurements;
+
+  // SYSTEM STORAGE AND WINDOW SYNCHRONIZATION (Integration flow)
+  useEffect(() => {
+    if (measurements) {
+      // Expose measurements JSON globally on the window
+      (window as any).AURA_BODY_MEASUREMENTS = measurements;
+      // Expose measurements persistently in localStorage for extension scraping
+      localStorage.setItem('aura_body_measurements', JSON.stringify(measurements));
+    }
+  }, [measurements]);
 
   // COMPUTE CONFIDENCE
   const confidence = activePresetId && activePreset
@@ -194,95 +200,165 @@ export default function App() {
       }
     : calculateConfidence(activeLandmarks || []);
 
-  // COMPUTE CLOTHING RECS
   const sizingRecommendation = evaluateSizing(measurements, gender);
-
   const selectedRefObjectName = REFERENCE_OBJECTS.find((o) => o.id === selectedRefObjId)?.name || 'Reference Object';
 
   return (
     <div className="min-h-screen bg-[#050505] text-white flex flex-col font-sans select-none antialiased">
-      <Header />
+      <Header isMediaPipeLoading={isMediaPipeLoading} />
 
-      {/* Main Sandbox Grid */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
-        
-        {/* LEFT COLUMN: Controls Panel */}
-        <div className="lg:col-span-4 flex flex-col">
-          <SidebarControls
-            path={path}
-            onPathChange={setPath}
-            userHeightCm={userHeightCm}
-            onUserHeightCmChange={setUserHeightCm}
-            selectedRefObjId={selectedRefObjId}
-            onSelectRefObjId={setSelectedRefObjId}
-            gender={gender}
-            onGenderChange={setGender}
-            activePresetId={activePresetId}
-            onSelectPreset={setActivePresetId}
-            onImageUploaded={(src) => {
-              setImageSrc(src);
-              setActivePresetId(null);
-            }}
-            isMediaPipeLoading={isMediaPipeLoading}
-            onLaunchWebcam={() => setShowWebcam(true)}
-          />
+      {/* Modern Horizontal Navigation Bar */}
+      <div className="border-b border-white/10 bg-black/30 backdrop-blur-md sticky top-16 z-40">
+        <div className="max-w-7xl mx-auto px-6 py-2.5 flex flex-wrap gap-2 items-center justify-between">
+          <div className="flex gap-1">
+            <button
+              onClick={() => setActiveModule('fit-depth')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all cursor-pointer ${
+                activeModule === 'fit-depth'
+                  ? 'bg-cyan-500 text-black shadow-[0_0_15px_rgba(6,182,212,0.4)]'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Cpu size={14} /> FIT DEPTH ENGINE
+            </button>
+            <button
+              onClick={() => setActiveModule('wardrobe-rag')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all cursor-pointer ${
+                activeModule === 'wardrobe-rag'
+                  ? 'bg-cyan-500 text-black shadow-[0_0_15px_rgba(6,182,212,0.4)]'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Shirt size={14} /> WARDROBE AI (RAG)
+            </button>
+            <button
+              onClick={() => setActiveModule('tryon-harmony')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all cursor-pointer ${
+                activeModule === 'tryon-harmony'
+                  ? 'bg-cyan-500 text-black shadow-[0_0_15px_rgba(6,182,212,0.4)]'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Sparkles size={14} /> TRY-ON & HARMONY
+            </button>
+            <button
+              onClick={() => setActiveModule('extension-sim')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-mono font-bold tracking-wider transition-all cursor-pointer ${
+                activeModule === 'extension-sim'
+                  ? 'bg-cyan-500 text-black shadow-[0_0_15px_rgba(6,182,212,0.4)]'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Chrome size={14} /> EXTENSION SANDBOX
+            </button>
+          </div>
+
+          <div className="hidden md:flex items-center gap-2 text-[10px] text-slate-500 font-mono">
+            <span>Active Server: http://localhost:3000</span>
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          </div>
         </div>
+      </div>
 
-        {/* CENTER COLUMN: Live Interactive Screen */}
-        <div className="lg:col-span-4 flex flex-col gap-4">
-          
-          {/* Real-time ML Pipeline Notice / Banner */}
-          {analysisNotice && (
-            <div className={`p-4 rounded-xl border flex items-start gap-2.5 text-xs transition-all duration-300 ${
-              analysisNotice.type === 'success'
-                ? 'bg-[#022c22]/30 border-emerald-500/30 text-emerald-300'
-                : 'bg-[#451a03]/30 border-amber-500/30 text-amber-300'
-            }`}>
-              <Info size={15} className="mt-0.5 shrink-0 text-cyan-400" />
-              <div>
-                <span className="font-bold block uppercase tracking-widest text-[9px] font-mono mb-1 text-slate-400">
-                  Telemetry Status log
+      {/* Main Module Content Router */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-6 flex flex-col justify-center">
+        {activeModule === 'fit-depth' && (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch w-full">
+            {/* LEFT COLUMN: Controls Panel */}
+            <div className="lg:col-span-4 flex flex-col">
+              <SidebarControls
+                path={path}
+                onPathChange={setPath}
+                userHeightCm={userHeightCm}
+                onUserHeightCmChange={setUserHeightCm}
+                selectedRefObjId={selectedRefObjId}
+                onSelectRefObjId={setSelectedRefObjId}
+                gender={gender}
+                onGenderChange={setGender}
+                activePresetId={activePresetId}
+                onSelectPreset={setActivePresetId}
+                onImageUploaded={(src) => {
+                  setImageSrc(src);
+                  setActivePresetId(null);
+                }}
+                isMediaPipeLoading={isMediaPipeLoading}
+                onLaunchWebcam={() => setShowWebcam(true)}
+              />
+            </div>
+
+            {/* CENTER COLUMN: Live Interactive Screen */}
+            <div className="lg:col-span-4 flex flex-col gap-4">
+              {analysisNotice && (
+                <div className={`p-4 rounded-xl border flex items-start gap-2.5 text-xs transition-all duration-300 ${
+                  analysisNotice.type === 'success'
+                    ? 'bg-[#022c22]/30 border-emerald-500/30 text-emerald-300'
+                    : 'bg-[#451a03]/30 border-amber-500/30 text-amber-300'
+                }`}>
+                  <Info size={15} className="mt-0.5 shrink-0 text-cyan-400" />
+                  <div>
+                    <span className="font-bold block uppercase tracking-widest text-[9px] font-mono mb-1 text-slate-400">
+                      Telemetry Status log
+                    </span>
+                    <span className="font-light">{analysisNotice.msg}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex-1">
+                <InteractiveCanvas
+                  imageSrc={imageSrc}
+                  landmarks={activeLandmarks}
+                  path={path}
+                  refBox={refBox}
+                  onRefBoxChange={setRefBox}
+                  selectedRefObjectName={selectedRefObjectName}
+                  selectedMetric={selectedMetric}
+                  onSelectMetric={setSelectedMetric}
+                  pxPerCm={pxPerCm}
+                  isAnalyzing={isAnalyzing}
+                />
+              </div>
+
+              {/* Secure Private Client Warning */}
+              <div className="p-4 bg-black/40 border border-white/10 rounded-xl flex items-center gap-3 text-xs text-slate-400">
+                <ShieldCheck className="text-cyan-400 shrink-0" size={16} />
+                <span className="font-light leading-snug">
+                  <strong className="text-white">Offline Privacy Guarantee:</strong> Coordinates and frames are processed exclusively raw in-browser via WASM. Stored in local JSON properties on the client window.
                 </span>
-                <span className="font-light">{analysisNotice.msg}</span>
               </div>
             </div>
-          )}
 
-          <div className="flex-1">
-            <InteractiveCanvas
-              imageSrc={imageSrc}
-              landmarks={activeLandmarks}
-              path={path}
-              refBox={refBox}
-              onRefBoxChange={setRefBox}
-              selectedRefObjectName={selectedRefObjectName}
-              selectedMetric={selectedMetric}
-              onSelectMetric={setSelectedMetric}
-              pxPerCm={pxPerCm}
-              isAnalyzing={isAnalyzing}
-            />
+            {/* RIGHT COLUMN: Output & JSON Telemetry Block */}
+            <div className="lg:col-span-4 flex flex-col">
+              <ResultsPanel
+                measurements={measurements}
+                confidence={confidence}
+                recommendation={sizingRecommendation}
+                selectedMetric={selectedMetric}
+                onSelectMetric={setSelectedMetric}
+                onModifyMeasurements={setOverrideMeasurements}
+              />
+            </div>
           </div>
+        )}
 
-          {/* Secure Private Client Warning */}
-          <div className="p-4 bg-black/40 border border-white/10 rounded-xl flex items-center gap-3 text-xs text-slate-400">
-            <ShieldCheck className="text-cyan-400 shrink-0" size={16} />
-            <span className="font-light leading-snug">
-              <strong className="text-white">Offline Privacy Guarantee:</strong> Coordinates and frames are processed exclusively raw in-browser via WASM. No video feeds or images are uploaded to any analytics servers.
-            </span>
-          </div>
-        </div>
+        {activeModule === 'wardrobe-rag' && (
+          <WardrobeEngine bodyMeasurements={measurements} />
+        )}
 
-        {/* RIGHT COLUMN: Output & JSON Telemetry Block */}
-        <div className="lg:col-span-4 flex flex-col">
-          <ResultsPanel
-            measurements={measurements}
-            confidence={confidence}
-            recommendation={sizingRecommendation}
-            selectedMetric={selectedMetric}
-            onSelectMetric={setSelectedMetric}
-            onModifyMeasurements={setOverrideMeasurements}
+        {activeModule === 'tryon-harmony' && (
+          <TryOnSandbox />
+        )}
+
+        {activeModule === 'extension-sim' && (
+          <ChromeExtensionSimulator
+            syncedMeasurements={measurements}
+            onSetMeasurements={(m) => setOverrideMeasurements(m)}
+            onNavigateToTab={(t) => {
+              if (t === 'fit-depth') setActiveModule('fit-depth');
+            }}
           />
-        </div>
+        )}
       </main>
 
       {/* Webcam Snapshot Overlay Portal */}
@@ -291,7 +367,7 @@ export default function App() {
           onClose={() => setShowWebcam(false)}
           onCapture={(captureSrc) => {
             setImageSrc(captureSrc);
-            setActivePresetId(null); // Switch to custom upload stream
+            setActivePresetId(null);
           }}
         />
       )}

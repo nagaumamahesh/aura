@@ -1,7 +1,8 @@
 {
     "version": "1.0.0",
     "manifest_version": 3,
-    "name": "React Chrome Extension",
+    "name": "AURA - AI Unified Reality",
+    "description": "AI-powered wardrobe-aware fashion commerce platform and virtual try-on advisor.",
     "permissions": [
         "activeTab",
         "scripting",
@@ -9,10 +10,11 @@
     ],
     "host_permissions": [
         "https://yce-api-01.makeupar.com/*",
-        "https://yce-us.s3-accelerate.amazonaws.com/*"
+        "https://yce-us.s3-accelerate.amazonaws.com/*",
+        "http://localhost:3000/*"
     ],
     "action": {
         "default_popup": "js/index.html",
-        "default_title": "React Chrome Extension"
+        "default_title": "AURA"
     }
 }
